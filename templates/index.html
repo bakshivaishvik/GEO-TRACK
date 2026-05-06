@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SatTrack · LSTM Trajectory Predictor</title>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ── Base ─────────────────────────────────────────────────────────────── */
+    :root {
+      --cyan:    #22d3ee;
+      --violet:  #818cf8;
+      --emerald: #34d399;
+      --rose:    #fb7185;
+      --glass-bg:     rgba(15, 23, 42, 0.55);
+      --glass-border: rgba(148, 163, 184, 0.12);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: 'Syne', sans-serif;
+      background: #020617;
+      color: #e2e8f0;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Animated starfield ───────────────────────────────────────────────── */
+    #stars-canvas {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    /* ── Glow blobs ───────────────────────────────────────────────────────── */
+    .blob {
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(120px);
+      opacity: 0.18;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .blob-1 { width: 500px; height: 500px; background: var(--violet); top: -120px; left: -100px; animation: drift1 18s ease-in-out infinite alternate; }
+    .blob-2 { width: 400px; height: 400px; background: var(--cyan);   bottom: -80px; right: -80px; animation: drift2 22s ease-in-out infinite alternate; }
+    .blob-3 { width: 300px; height: 300px; background: var(--emerald); top: 50%; left: 50%; transform: translate(-50%,-50%); animation: drift3 14s ease-in-out infinite alternate; }
+
+    @keyframes drift1 { from { transform: translate(0,0);    } to { transform: translate(60px, 80px);  } }
+    @keyframes drift2 { from { transform: translate(0,0);    } to { transform: translate(-50px,-60px); } }
+    @keyframes drift3 { from { transform: translate(-50%,-50%); } to { transform: translate(-45%,-55%); } }
+
+    /* ── Glass card ───────────────────────────────────────────────────────── */
+    .glass {
+      background: var(--glass-bg);
+      border: 1px solid var(--glass-border);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border-radius: 20px;
+    }
+
+    /* ── Inputs ───────────────────────────────────────────────────────────── */
+    .sat-input {
+      width: 100%;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(148,163,184,0.18);
+      border-radius: 10px;
+      padding: 0.65rem 1rem;
+      color: #f1f5f9;
+      font-family: 'Space Mono', monospace;
+      font-size: 0.9rem;
+      transition: border-color 0.25s, box-shadow 0.25s;
+      outline: none;
+    }
+    .sat-input:focus {
+      border-color: var(--cyan);
+      box-shadow: 0 0 0 3px rgba(34,211,238,0.12);
+    }
+    .sat-input::placeholder { color: #475569; }
+
+    label {
+      display: block;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #94a3b8;
+      margin-bottom: 0.4rem;
+    }
+
+    /* ── Button ───────────────────────────────────────────────────────────── */
+    #predict-btn {
+      position: relative;
+      overflow: hidden;
+      background: linear-gradient(135deg, #0e7490 0%, #6366f1 100%);
+      border: none;
+      border-radius: 12px;
+      padding: 0.85rem 2rem;
+      color: #fff;
+      font-family: 'Syne', sans-serif;
+      font-weight: 700;
+      font-size: 1rem;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+      width: 100%;
+      transition: opacity 0.2s, transform 0.15s;
+    }
+    #predict-btn:hover   { opacity: 0.9; transform: translateY(-1px); }
+    #predict-btn:active  { transform: translateY(0); }
+    #predict-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* shimmer sweep on btn */
+    #predict-btn::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.18) 50%, transparent 100%);
+      transform: translateX(-100%);
+    }
+    #predict-btn:hover::after { animation: shimmer 0.6s ease-in-out; }
+    @keyframes shimmer { to { transform: translateX(100%); } }
+
+    /* ── Result card ──────────────────────────────────────────────────────── */
+    #result-card {
+      display: none;
+      animation: fadeUp 0.45s cubic-bezier(0.22,1,0.36,1) forwards;
+    }
+    #result-card.visible { display: block; }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(18px); }
+      to   { opacity: 1; transform: translateY(0);    }
+    }
+
+    /* ── Metric value ─────────────────────────────────────────────────────── */
+    .metric-value {
+      font-family: 'Space Mono', monospace;
+      font-size: 2.6rem;
+      font-weight: 700;
+      background: linear-gradient(90deg, var(--cyan), var(--emerald));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      line-height: 1.1;
+    }
+
+    /* ── Orbit ring spinner ───────────────────────────────────────────────── */
+    #spinner { display: none; }
+    #spinner.spinning { display: flex; }
+
+    .ring {
+      width: 18px; height: 18px;
+      border: 2px solid rgba(34,211,238,0.25);
+      border-top-color: var(--cyan);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Status pill ──────────────────────────────────────────────────────── */
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 0.25rem 0.75rem;
+      border-radius: 999px;
+    }
+    .status-ok   { background: rgba(52,211,153,0.12); color: var(--emerald); border: 1px solid rgba(52,211,153,0.25); }
+    .status-demo { background: rgba(251,113,133,0.12); color: var(--rose);    border: 1px solid rgba(251,113,133,0.25); }
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse-dot 1.5s ease-in-out infinite; }
+    @keyframes pulse-dot { 0%,100%{opacity:1;} 50%{opacity:0.3;} }
+
+    /* ── Error message ────────────────────────────────────────────────────── */
+    #error-msg {
+      display: none;
+      color: var(--rose);
+      font-family: 'Space Mono', monospace;
+      font-size: 0.8rem;
+      margin-top: 0.75rem;
+    }
+
+    /* ── Header orbit icon ────────────────────────────────────────────────── */
+    .orbit-icon {
+      width: 52px; height: 52px;
+      position: relative;
+      margin: 0 auto 1rem;
+    }
+    .orbit-ring-outer {
+      position: absolute; inset: 0;
+      border: 2px solid rgba(34,211,238,0.35);
+      border-radius: 50%;
+      animation: spin 6s linear infinite;
+    }
+    .orbit-ring-outer::before {
+      content: '';
+      position: absolute;
+      width: 8px; height: 8px;
+      background: var(--cyan);
+      border-radius: 50%;
+      top: -4px; left: 50%; transform: translateX(-50%);
+      box-shadow: 0 0 8px var(--cyan);
+    }
+    .orbit-core {
+      position: absolute; inset: 10px;
+      background: radial-gradient(circle, #1e3a5f, #0f172a);
+      border-radius: 50%;
+      border: 1px solid rgba(34,211,238,0.2);
+    }
+
+    /* ── Responsive ───────────────────────────────────────────────────────── */
+    .content { position: relative; z-index: 10; }
+  </style>
+</head>
+
+<body>
+  <!-- Starfield canvas -->
+  <canvas id="stars-canvas"></canvas>
+
+  <!-- Glow blobs -->
+  <div class="blob blob-1"></div>
+  <div class="blob blob-2"></div>
+  <div class="blob blob-3"></div>
+
+  <!-- ── Main layout ───────────────────────────────────────────────────────── -->
+  <div class="content min-h-screen flex flex-col items-center justify-center px-4 py-12">
+
+    <!-- Header -->
+    <header class="text-center mb-8">
+      <div class="orbit-icon">
+        <div class="orbit-ring-outer"></div>
+        <div class="orbit-core"></div>
+      </div>
+      <h1 class="text-4xl font-extrabold tracking-tight mb-1"
+          style="background: linear-gradient(90deg,#22d3ee,#818cf8); -webkit-background-clip:text; -webkit-text-fill-color:transparent;">
+        SatTrack
+      </h1>
+      <p class="text-slate-400 text-sm font-medium tracking-widest uppercase">LSTM Satellite Trajectory Predictor</p>
+
+      <!-- Model status -->
+      {% if model_loaded %}
+      <div class="status-pill status-ok mt-3 mx-auto" style="width:fit-content;">
+        <span class="dot"></span> Model Loaded · CPU Inference
+      </div>
+      {% else %}
+      <div class="status-pill status-demo mt-3 mx-auto" style="width:fit-content;">
+        <span class="dot"></span> Demo Mode · Place lstm_trajectory_model.pth in root
+      </div>
+      {% endif %}
+    </header>
+
+    <!-- ── Glass dashboard card ─────────────────────────────────────────── -->
+    <div class="glass w-full max-w-2xl p-8 shadow-2xl">
+
+      <h2 class="text-lg font-bold text-slate-200 mb-1">Orbital Parameters</h2>
+      <p class="text-slate-500 text-xs mb-6 font-mono">
+        Input normalised [0–1] values matching the MinMaxScaler range used during training.
+      </p>
+
+      <!-- Feature grid -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-5 mb-6">
+
+        <!-- Altitude -->
+        <div>
+          <label for="altitude">Altitude (km)</label>
+          <input id="altitude" type="number" step="any"
+                 class="sat-input" placeholder="e.g. 0.42"
+                 min="0" max="1" />
+          <p class="text-slate-600 text-xs mt-1 font-mono">Range: 160 – 36,000 km → normalise to [0,1]</p>
+        </div>
+
+        <!-- Inclination -->
+        <div>
+          <label for="inclination">Inclination (°)</label>
+          <input id="inclination" type="number" step="any"
+                 class="sat-input" placeholder="e.g. 0.55"
+                 min="0" max="1" />
+          <p class="text-slate-600 text-xs mt-1 font-mono">Range: 0° – 180° → normalise to [0,1]</p>
+        </div>
+
+        <!-- Eccentricity -->
+        <div>
+          <label for="eccentricity">Eccentricity</label>
+          <input id="eccentricity" type="number" step="any"
+                 class="sat-input" placeholder="e.g. 0.01"
+                 min="0" max="1" />
+          <p class="text-slate-600 text-xs mt-1 font-mono">Range: 0 – 1 (dimensionless)</p>
+        </div>
+
+        <!-- Mean Motion -->
+        <div>
+          <label for="mean_motion">Mean Motion (rev/day)</label>
+          <input id="mean_motion" type="number" step="any"
+                 class="sat-input" placeholder="e.g. 0.73"
+                 min="0" max="1" />
+          <p class="text-slate-600 text-xs mt-1 font-mono">Range: 1 – 17 rev/day → normalise to [0,1]</p>
+        </div>
+      </div>
+
+      <!-- Predict button + spinner -->
+      <button id="predict-btn" onclick="runPrediction()">
+        <span id="btn-label">Run Trajectory Prediction</span>
+        <span id="spinner" class="spinning" style="display:none; align-items:center; gap:0.5rem; justify-content:center;">
+          <span class="ring"></span> Computing…
+        </span>
+      </button>
+
+      <!-- Error -->
+      <p id="error-msg"></p>
+
+    </div><!-- /glass card -->
+
+
+    <!-- ── Result card ──────────────────────────────────────────────────── -->
+    <div id="result-card" class="glass w-full max-w-2xl mt-5 p-8 shadow-2xl">
+
+      <div class="flex items-center justify-between mb-5">
+        <h2 class="text-lg font-bold text-slate-200">Prediction Output</h2>
+        <span id="result-mode-pill" class="status-pill status-ok">
+          <span class="dot"></span> <span id="result-mode-label">Model</span>
+        </span>
+      </div>
+
+      <!-- Metric -->
+      <div class="glass p-5 mb-5 text-center" style="border-color:rgba(34,211,238,0.18);">
+        <p class="text-xs text-slate-500 uppercase tracking-widest mb-2 font-mono">Predicted Mean Motion (normalised)</p>
+        <p class="metric-value" id="result-value">—</p>
+      </div>
+
+      <!-- Breakdown row -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center text-xs font-mono text-slate-400">
+        <div class="glass p-3" style="border-color:rgba(129,140,248,0.15);">
+          <p class="text-slate-600 mb-1">Altitude</p>
+          <p id="echo-alt" class="text-violet-400 font-bold">—</p>
+        </div>
+        <div class="glass p-3" style="border-color:rgba(129,140,248,0.15);">
+          <p class="text-slate-600 mb-1">Inclination</p>
+          <p id="echo-inc" class="text-violet-400 font-bold">—</p>
+        </div>
+        <div class="glass p-3" style="border-color:rgba(129,140,248,0.15);">
+          <p class="text-slate-600 mb-1">Eccentricity</p>
+          <p id="echo-ecc" class="text-violet-400 font-bold">—</p>
+        </div>
+        <div class="glass p-3" style="border-color:rgba(129,140,248,0.15);">
+          <p class="text-slate-600 mb-1">Mean Motion</p>
+          <p id="echo-mm" class="text-violet-400 font-bold">—</p>
+        </div>
+      </div>
+
+      <p class="text-slate-600 text-xs mt-5 font-mono text-center">
+        ↑ Output is in the same MinMaxScaler-normalised space as training targets.
+        Inverse-transform with your scaler to recover physical rev/day values.
+      </p>
+    </div>
+
+    <!-- Footer -->
+    <footer class="mt-10 text-slate-700 text-xs font-mono text-center">
+      Flask · PyTorch LSTM · Intel i5 11th Gen CPU &nbsp;|&nbsp;
+      4 features → 32 hidden units → 1 output
+    </footer>
+
+  </div><!-- /content -->
+
+
+  <!-- ── Starfield JS ──────────────────────────────────────────────────────── -->
+  <script>
+    (function() {
+      const canvas = document.getElementById('stars-canvas');
+      const ctx    = canvas.getContext('2d');
+      let W, H, stars = [];
+
+      function resize() {
+        W = canvas.width  = window.innerWidth;
+        H = canvas.height = window.innerHeight;
+      }
+
+      function initStars(n = 220) {
+        stars = Array.from({ length: n }, () => ({
+          x: Math.random() * W,
+          y: Math.random() * H,
+          r: Math.random() * 1.2 + 0.3,
+          a: Math.random(),
+          speed: Math.random() * 0.004 + 0.001,
+          phase: Math.random() * Math.PI * 2,
+        }));
+      }
+
+      function draw(t) {
+        ctx.clearRect(0, 0, W, H);
+        for (const s of stars) {
+          const alpha = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(t * s.speed + s.phase));
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(226,232,240,${alpha})`;
+          ctx.fill();
+        }
+        requestAnimationFrame(draw);
+      }
+
+      window.addEventListener('resize', () => { resize(); initStars(); });
+      resize();
+      initStars();
+      requestAnimationFrame(draw);
+    })();
+  </script>
+
+
+  <!-- ── Prediction logic ──────────────────────────────────────────────────── -->
+  <script>
+    async function runPrediction() {
+      const btn      = document.getElementById('predict-btn');
+      const label    = document.getElementById('btn-label');
+      const spinner  = document.getElementById('spinner');
+      const errorMsg = document.getElementById('error-msg');
+      const resultCard = document.getElementById('result-card');
+
+      // Gather inputs
+      const altitude    = parseFloat(document.getElementById('altitude').value);
+      const inclination = parseFloat(document.getElementById('inclination').value);
+      const eccentricity= parseFloat(document.getElementById('eccentricity').value);
+      const mean_motion = parseFloat(document.getElementById('mean_motion').value);
+
+      // Validate
+      if ([altitude, inclination, eccentricity, mean_motion].some(isNaN)) {
+        errorMsg.textContent = '⚠ Please fill in all four fields with numeric values.';
+        errorMsg.style.display = 'block';
+        return;
+      }
+
+      // UI → loading state
+      btn.disabled      = true;
+      label.style.display  = 'none';
+      spinner.style.display = 'flex';
+      errorMsg.style.display = 'none';
+      resultCard.classList.remove('visible');
+
+      try {
+        const response = await fetch('/predict', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ altitude_km: altitude, inclination, eccentricity, mean_motion }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || data.status === 'error') {
+          throw new Error(data.error || 'Server error');
+        }
+
+        // Populate result card
+        document.getElementById('result-value').textContent = data.predicted_mean_motion.toFixed(6);
+        document.getElementById('echo-alt').textContent  = altitude.toFixed(4);
+        document.getElementById('echo-inc').textContent  = inclination.toFixed(4);
+        document.getElementById('echo-ecc').textContent  = eccentricity.toFixed(4);
+        document.getElementById('echo-mm').textContent   = mean_motion.toFixed(4);
+
+        // Mode pill
+        const pill  = document.getElementById('result-mode-pill');
+        const pLabel = document.getElementById('result-mode-label');
+        if (data.mode === 'demo') {
+          pill.className  = 'status-pill status-demo';
+          pLabel.textContent = 'Demo';
+        } else {
+          pill.className  = 'status-pill status-ok';
+          pLabel.textContent = 'Model';
+        }
+
+        resultCard.classList.add('visible');
+
+      } catch (err) {
+        errorMsg.textContent  = `⚠ ${err.message}`;
+        errorMsg.style.display = 'block';
+      } finally {
+        btn.disabled         = false;
+        label.style.display  = 'inline';
+        spinner.style.display = 'none';
+      }
+    }
+  </script>
+
+</body>
+</html>

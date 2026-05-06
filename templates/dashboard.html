@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>SSA Dashboard — Orbital Intelligence with MPC</title>
+
+<!-- Tailwind CSS CDN -->
+<script src="https://cdn.tailwindcss.com"></script>
+<!-- Plotly.js (WebGL surface + 3D scatter) -->
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+<!-- Google Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&family=Inter:wght@300;400;500&display=swap" rel="stylesheet"/>
+
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      fontFamily: {
+        orbitron: ['Orbitron','sans-serif'],
+        mono:     ['Share Tech Mono','monospace'],
+        body:     ['Inter','sans-serif'],
+      },
+      colors: {
+        void:    '#020408',
+        cosmos:  '#060d1a',
+        nebula:  '#0a1628',
+        panel:   '#0d1e35',
+        border:  '#1a3356',
+        cyan:    { DEFAULT:'#00e5ff', dim:'#00a8bc', glow:'rgba(0,229,255,0.15)' },
+        amber:   { DEFAULT:'#ffb300', dim:'#c87800', glow:'rgba(255,179,0,0.15)' },
+        red:     { DEFAULT:'#ff3d3d', dim:'#c00000', glow:'rgba(255,61,61,0.2)'  },
+        green:   { DEFAULT:'#00e676', dim:'#00a050', glow:'rgba(0,230,118,0.15)' },
+        purple:  { DEFAULT:'#aa00ff', dim:'#6600cc' },
+      },
+    }
+  }
+}
+</script>
+
+<style>
+  /* ── Base ─────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; padding: 0;
+    background: #020408;
+    color: #c8d8f0;
+    font-family: 'Inter', sans-serif;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  /* ── Star-field canvas ────────────────────────── */
+  #starfield {
+    position: fixed; inset: 0;
+    z-index: 0;
+    pointer-events: none;
+  }
+
+  /* ── Layout shells ────────────────────────────── */
+  #app {
+    position: relative; z-index: 1;
+    display: grid;
+    grid-template-rows: 56px 1fr;
+    grid-template-columns: 280px 1fr 300px;
+    height: 100vh;
+    gap: 0;
+  }
+
+  /* ── Topbar ───────────────────────────────────── */
+  #topbar {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; gap: 20px;
+    padding: 0 24px;
+    background: rgba(6,13,26,0.9);
+    border-bottom: 1px solid #1a3356;
+    backdrop-filter: blur(12px);
+  }
+
+  /* ── Panels ───────────────────────────────────── */
+  .panel {
+    background: rgba(13,30,53,0.7);
+    border-right: 1px solid #1a3356;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .panel-right {
+    border-right: none;
+    border-left: 1px solid #1a3356;
+  }
+  .panel-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid #1a3356;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 11px; font-weight: 700;
+    letter-spacing: 0.15em; text-transform: uppercase;
+    color: #00e5ff;
+    flex-shrink: 0;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .panel-body {
+    flex: 1; overflow-y: auto;
+    padding: 0;
+    scrollbar-width: thin;
+    scrollbar-color: #1a3356 transparent;
+  }
+
+  /* ── Viewport (3D) ────────────────────────────── */
+  #viewport {
+    background: transparent;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  #plot3d {
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* ── Glow utilities ───────────────────────────── */
+  .glow-cyan  { box-shadow: 0 0 16px rgba(0,229,255,0.25); }
+  .glow-red   { box-shadow: 0 0 16px rgba(255,61,61,0.35); }
+  .glow-green { box-shadow: 0 0 16px rgba(0,230,118,0.25); }
+
+  /* ── Select ───────────────────────────────────── */
+  select {
+    background: #0d1e35;
+    border: 1px solid #1a3356;
+    color: #c8d8f0;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+    padding: 6px 28px 6px 10px;
+    border-radius: 4px;
+    appearance: none;
+    cursor: pointer;
+    outline: none;
+    transition: border-color .2s;
+  }
+  select:focus { border-color: #00e5ff; }
+
+  /* ── Button ───────────────────────────────────── */
+  .btn-primary {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 11px; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    padding: 8px 20px;
+    background: transparent;
+    border: 1px solid #00e5ff;
+    color: #00e5ff;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background .2s, box-shadow .2s;
+  }
+  .btn-primary:hover {
+    background: rgba(0,229,255,0.12);
+    box-shadow: 0 0 20px rgba(0,229,255,0.3);
+  }
+  .btn-primary:active { transform: scale(.97); }
+  .btn-primary:disabled {
+    opacity: .45; cursor: default;
+    box-shadow: none; background: transparent;
+  }
+
+  /* ── Alert card ───────────────────────────────── */
+  .alert-card {
+    margin: 10px 12px;
+    padding: 12px 14px;
+    border-radius: 6px;
+    border: 1px solid #ff3d3d;
+    background: rgba(255,61,61,0.07);
+    animation: pulseAlert 2s infinite;
+  }
+  .alert-card .norad { font-family: 'Share Tech Mono'; font-size: 11px; color: #ff3d3d; }
+  .alert-card .name  { font-size: 12px; font-weight: 500; color: #ffc0c0; margin-top:2px;}
+  .alert-card .dist  { font-family: 'Orbitron'; font-size: 16px; color: #ff3d3d; margin-top:6px;}
+
+  @keyframes pulseAlert {
+    0%,100% { border-color: #ff3d3d; box-shadow: 0 0 8px rgba(255,61,61,0.2); }
+    50%      { border-color: #ff7070; box-shadow: 0 0 18px rgba(255,61,61,0.45); }
+  }
+
+  /* ── Miss-distance table ──────────────────────── */
+  table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  th {
+    font-family: 'Orbitron'; font-size: 9.5px; font-weight: 700;
+    letter-spacing: .12em; text-transform: uppercase;
+    color: #4a7a9b; padding: 9px 12px;
+    border-bottom: 1px solid #1a3356;
+    text-align: left; position: sticky; top: 0;
+    background: #0d1e35; z-index: 2;
+  }
+  td { padding: 8px 12px; border-bottom: 1px solid rgba(26,51,86,0.5); }
+  tr:hover td { background: rgba(0,229,255,0.04); }
+  .badge {
+    display: inline-block; padding: 2px 7px; border-radius: 100px;
+    font-size: 10px; font-family: 'Share Tech Mono'; letter-spacing:.04em;
+  }
+  .badge-safe   { background: rgba(0,230,118,0.15); color: #00e676; border:1px solid #00e676; }
+  .badge-warn   { background: rgba(255,179,0,0.15); color: #ffb300; border:1px solid #ffb300; }
+  .badge-danger { background: rgba(255,61,61,0.15);  color: #ff3d3d; border:1px solid #ff3d3d; }
+
+  /* ── Metric card ──────────────────────────────── */
+  .metric-block {
+    padding: 14px 16px;
+    border-bottom: 1px solid rgba(26,51,86,0.6);
+  }
+  .metric-label {
+    font-family: 'Orbitron'; font-size: 9.5px; font-weight: 700;
+    letter-spacing: .14em; text-transform: uppercase; color: #4a7a9b;
+  }
+  .metric-value {
+    font-family: 'Orbitron'; font-size: 22px; font-weight: 700;
+    color: #00e5ff; margin-top: 4px; line-height: 1;
+  }
+  .metric-unit { font-size: 11px; color: #4a7a9b; margin-left: 4px; }
+
+  /* ── Maneuver notification ───────────────────── */
+  .maneuver-notice {
+    background: rgba(0,229,255,0.08);
+    border-left: 3px solid #00e5ff;
+    padding: 6px 12px;
+    margin: 8px 12px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    color: #00e5ff;
+    border-radius: 3px;
+  }
+
+  /* ── Scan line overlay ────────────────────────── */
+  #scanlines {
+    position: fixed; inset:0; z-index:0; pointer-events:none;
+    background: repeating-linear-gradient(
+      to bottom, transparent 0, transparent 2px,
+      rgba(0,0,0,.04) 2px, rgba(0,0,0,.04) 4px
+    );
+  }
+
+  /* ── Status bar ───────────────────────────────── */
+  #statusbar {
+    position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+    font-family: 'Share Tech Mono'; font-size: 11px; color: #4a7a9b;
+    white-space: nowrap; display: flex; gap: 24px; align-items:center;
+    pointer-events:none; z-index:10;
+  }
+  .status-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    display: inline-block; margin-right: 6px;
+    animation: blink 1.5s step-start infinite;
+  }
+  @keyframes blink { 50% { opacity:0; } }
+
+  /* ── Spinner ──────────────────────────────────── */
+  #loading-overlay {
+    position: absolute; inset:0; z-index:50;
+    background: rgba(2,4,8,0.85);
+    display: flex; flex-direction:column;
+    align-items:center; justify-content:center;
+    gap: 16px; transition: opacity .3s;
+  }
+  #loading-overlay.hidden { opacity:0; pointer-events:none; }
+  .spinner {
+    width:48px; height:48px; border-radius:50%;
+    border: 2px solid #1a3356;
+    border-top-color: #00e5ff;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Sat selector list ────────────────────────── */
+  .sat-item {
+    display:flex; align-items:center; gap:10px;
+    padding: 9px 14px; cursor:pointer;
+    border-bottom: 1px solid rgba(26,51,86,0.4);
+    transition: background .15s;
+    font-size: 12px;
+  }
+  .sat-item:hover   { background: rgba(0,229,255,0.05); }
+  .sat-item.active  { background: rgba(0,229,255,0.08); border-left: 2px solid #00e5ff; }
+  .sat-cat-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+
+  /* ── Progress bar ─────────────────────────────── */
+  .mini-bar { height: 3px; border-radius:2px; background: #1a3356; overflow:hidden; margin-top:6px; }
+  .mini-bar-fill { height:100%; border-radius:2px; transition: width .5s; }
+  
+  /* ── Category buttons ─────────────────────────── */
+  .cat-btn {
+    font-family:'Orbitron'; font-size:9px; font-weight:700;
+    letter-spacing:.1em; text-transform:uppercase;
+    padding:4px 10px; border-radius:3px; cursor:pointer;
+    background:transparent; border:1px solid #1a3356; color:#4a7a9b;
+    transition:all .15s;
+  }
+  .cat-btn:hover { border-color:#00e5ff; color:#00e5ff; }
+  .cat-btn.active { background:rgba(0,229,255,0.1); border-color:#00e5ff; color:#00e5ff; }
+</style>
+</head>
+
+<body>
+<canvas id="starfield"></canvas>
+<div id="scanlines"></div>
+
+<div id="app">
+
+  <!-- ═══════════════ TOP BAR ═══════════════ -->
+  <header id="topbar">
+    <!-- Logo -->
+    <div style="display:flex;align-items:center;gap:10px;margin-right:16px;">
+      <svg width="28" height="28" viewBox="0 0 28 28">
+        <circle cx="14" cy="14" r="12" fill="none" stroke="#00e5ff" stroke-width="1.2"/>
+        <circle cx="14" cy="14" r="4"  fill="#00e5ff" opacity=".9"/>
+        <ellipse cx="14" cy="14" rx="12" ry="5" fill="none" stroke="#00e5ff" stroke-width="0.8" opacity=".5" transform="rotate(-30 14 14)"/>
+        <ellipse cx="14" cy="14" rx="12" ry="5" fill="none" stroke="#00a8bc" stroke-width="0.8" opacity=".35" transform="rotate(30 14 14)"/>
+      </svg>
+      <span style="font-family:'Orbitron';font-size:15px;font-weight:900;color:#00e5ff;letter-spacing:.12em;">ORBIT<span style="color:#4a7a9b">WATCH</span></span>
+    </div>
+
+    <!-- Divider -->
+    <div style="width:1px;height:28px;background:#1a3356;"></div>
+
+    <!-- Controls -->
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span style="font-family:'Orbitron';font-size:9px;color:#4a7a9b;letter-spacing:.15em;">TARGET SAT</span>
+      <select id="target-select" style="min-width:240px;">
+        {% for t in targets %}
+        <option value="{{ t.norad }}">{{ t.norad }} — {{ t.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <button class="btn-primary" id="run-btn">
+      ▶ &nbsp;RUN ANALYSIS
+    </button>
+
+    <!-- Spacer -->
+    <div style="flex:1;"></div>
+
+    <!-- Status indicators -->
+    <div style="display:flex;gap:20px;align-items:center;">
+      <div id="status-miss" style="font-family:'Share Tech Mono';font-size:12px;color:#4a7a9b;">
+        MIN MISS: — km
+      </div>
+      <div id="status-safe" style="font-family:'Orbitron';font-size:11px;font-weight:700;letter-spacing:.1em;color:#4a7a9b;">
+        ● STANDBY
+      </div>
+      <div style="font-family:'Share Tech Mono';font-size:11px;color:#4a7a9b;" id="clock-display">
+        UTC 00:00:00
+      </div>
+    </div>
+  </header>
+
+  <!-- ═══════════════ LEFT PANEL — Satellite List ═══════════════ -->
+  <aside class="panel" id="left-panel">
+    <div class="panel-header">
+      <svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="none" stroke="#00e5ff" stroke-width="1.2"/><circle cx="6" cy="6" r="2" fill="#00e5ff"/></svg>
+      Catalog Objects
+      <span id="catalog-count" style="margin-left:auto;font-family:'Share Tech Mono';font-size:11px;color:#4a7a9b;letter-spacing:0;">—</span>
+    </div>
+
+    <!-- Category filter -->
+    <div style="padding:10px 14px;border-bottom:1px solid rgba(26,51,86,0.6);display:flex;gap:6px;flex-wrap:wrap;">
+      <button class="cat-btn active" data-cat="all">All</button>
+      <button class="cat-btn" data-cat="space_station">Station</button>
+      <button class="cat-btn" data-cat="starlink">Starlink</button>
+      <button class="cat-btn" data-cat="debris">Debris</button>
+      <button class="cat-btn" data-cat="navigation">Nav</button>
+      <button class="cat-btn" data-cat="active">Active</button>
+    </div>
+
+    <div class="panel-body" id="sat-list"></div>
+
+    <!-- Target orbital elements -->
+    <div id="orbital-params" style="border-top:1px solid #1a3356;padding:14px 16px;flex-shrink:0;background:rgba(6,13,26,0.5);">
+      <div class="metric-label" style="margin-bottom:10px;">Target Parameters</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div>
+          <div style="font-size:9.5px;color:#4a7a9b;font-family:'Orbitron';letter-spacing:.1em;">ALTITUDE</div>
+          <div class="mono" id="p-alt" style="font-family:'Share Tech Mono';color:#00e5ff;font-size:13px;">— km</div>
+        </div>
+        <div>
+          <div style="font-size:9.5px;color:#4a7a9b;font-family:'Orbitron';letter-spacing:.1em;">INCLINATION</div>
+          <div class="mono" id="p-inc" style="font-family:'Share Tech Mono';color:#00e5ff;font-size:13px;">— °</div>
+        </div>
+        <div>
+          <div style="font-size:9.5px;color:#4a7a9b;font-family:'Orbitron';letter-spacing:.1em;">ECCENTRICITY</div>
+          <div class="mono" id="p-ecc" style="font-family:'Share Tech Mono';color:#00e5ff;font-size:13px;">—</div>
+        </div>
+        <div>
+          <div style="font-size:9.5px;color:#4a7a9b;font-family:'Orbitron';letter-spacing:.1em;">MEAN MOTION</div>
+          <div class="mono" id="p-mm"  style="font-family:'Share Tech Mono';color:#00e5ff;font-size:13px;">— rev/day</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ═══════════════ CENTRE — 3D Viewport ═══════════════ -->
+  <main id="viewport" style="position:relative;">
+    <div id="loading-overlay" class="hidden">
+      <div class="spinner"></div>
+      <span style="font-family:'Orbitron';font-size:11px;letter-spacing:.15em;color:#00e5ff;">COMPUTING TRAJECTORY & SEARCHING FOR SAFE PATH...</span>
+    </div>
+
+    <div id="plot3d"></div>
+
+    <!-- Bottom HUD -->
+    <div id="statusbar">
+      <span><span class="status-dot" style="background:#00e5ff;"></span>MPC ACTIVE</span>
+      <span id="hud-ms">— ms</span>
+      <span id="hud-pts">— pts</span>
+      <span id="hud-alerts">ALERTS: —</span>
+    </div>
+  </main>
+
+  <!-- ═══════════════ RIGHT PANEL — Alerts & Distances ═══════════════ -->
+  <aside class="panel panel-right">
+    <!-- Collision alert header -->
+    <div class="panel-header" id="alert-header">
+      <svg width="12" height="12" viewBox="0 0 12 12"><polygon points="6,1 11,11 1,11" fill="none" stroke="#ff3d3d" stroke-width="1.2"/><line x1="6" y1="4" x2="6" y2="8" stroke="#ff3d3d" stroke-width="1.2"/><circle cx="6" cy="9.5" r=".7" fill="#ff3d3d"/></svg>
+      Collision Alerts
+      <span id="alert-count" style="margin-left:auto;background:rgba(255,61,61,0.2);color:#ff3d3d;font-family:'Share Tech Mono';font-size:11px;padding:1px 6px;border-radius:10px;">0</span>
+    </div>
+    <div id="alerts-body" style="flex-shrink:0;max-height:210px;overflow-y:auto;border-bottom:1px solid #1a3356;">
+      <div style="padding:20px;text-align:center;color:#4a7a9b;font-size:12px;">Run analysis to scan</div>
+    </div>
+
+    <!-- Maneuver notice -->
+    <div id="maneuver-notice" class="maneuver-notice" style="display:none;"></div>
+
+    <!-- Key metrics -->
+    <div style="border-bottom:1px solid rgba(26,51,86,0.6);">
+      <div class="metric-block">
+        <div class="metric-label">Min Miss Distance</div>
+        <div class="metric-value" id="m-minmiss">—<span class="metric-unit">km</span></div>
+        <div class="mini-bar"><div class="mini-bar-fill" id="miss-bar" style="width:0%;background:#00e5ff;"></div></div>
+      </div>
+      <div class="metric-block">
+        <div class="metric-label">Safety Status</div>
+        <div class="metric-value" id="m-status" style="font-size:14px;color:#4a7a9b;">STANDBY</div>
+      </div>
+      <div class="metric-block">
+        <div class="metric-label">Predicted Mean Motion</div>
+        <div style="font-family:'Share Tech Mono';font-size:12px;color:#00e5ff;margin-top:4px;" id="m-mm">— rev/day</div>
+      </div>
+    </div>
+
+    <!-- Miss Distance Table -->
+    <div class="panel-header" style="border-top:none;">
+      <svg width="12" height="12" viewBox="0 0 12 12"><rect x="1" y="1" width="10" height="10" rx="1" fill="none" stroke="#00e5ff" stroke-width="1"/><line x1="1" y1="4" x2="11" y2="4" stroke="#00e5ff" stroke-width=".8"/><line x1="1" y1="7" x2="11" y2="7" stroke="#00e5ff" stroke-width=".8"/><line x1="4" y1="1" x2="4" y2="11" stroke="#00e5ff" stroke-width=".8"/></svg>
+      Proximity Table
+    </div>
+    <div class="panel-body">
+      <table id="dist-table">
+        <thead>
+          <tr>
+            <th>NORAD</th>
+            <th>Name</th>
+            <th>Miss Dist</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="dist-body">
+          <tr><td colspan="4" style="text-align:center;color:#4a7a9b;padding:20px;">Run analysis…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </aside>
+
+</div><!-- #app -->
+
+<script>
+/* ══════════════════════════════════════════
+   STAR FIELD
+══════════════════════════════════════════ */
+(function(){
+  const c = document.getElementById('starfield');
+  const ctx = c.getContext('2d');
+  function resize(){c.width=window.innerWidth;c.height=window.innerHeight;}
+  resize(); window.addEventListener('resize',resize);
+  const stars=[];
+  for(let i=0;i<320;i++) stars.push({
+    x:Math.random()*window.innerWidth, y:Math.random()*window.innerHeight,
+    r:Math.random()*.9+.2, a:Math.random(),
+    speed:Math.random()*.0008+.0002
+  });
+  function frame(t){
+    ctx.clearRect(0,0,c.width,c.height);
+    stars.forEach(s=>{
+      s.a = .3+Math.abs(Math.sin(t*s.speed))*0.7;
+      ctx.beginPath();
+      ctx.arc(s.x,s.y,s.r,0,Math.PI*2);
+      ctx.fillStyle=`rgba(180,210,255,${s.a})`;
+      ctx.fill();
+    });
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+
+/* ══════════════════════════════════════════
+   CLOCK
+══════════════════════════════════════════ */
+function updateClock(){
+  const now=new Date();
+  document.getElementById('clock-display').textContent=
+    'UTC '+now.getUTCHours().toString().padStart(2,'0')+':'+
+    now.getUTCMinutes().toString().padStart(2,'0')+':'+
+    now.getUTCSeconds().toString().padStart(2,'0');
+}
+setInterval(updateClock,1000); updateClock();
+
+/* ══════════════════════════════════════════
+   CATALOG RENDERING
+══════════════════════════════════════════ */
+const CAT_COLORS = {
+  space_station:'#00e5ff', starlink:'#aa00ff',
+  debris:'#ff3d3d', navigation:'#00e676', active:'#ffb300'
+};
+const CAT_LABEL = {
+  space_station:'STATION', starlink:'STARLINK',
+  debris:'DEBRIS', navigation:'NAV', active:'ACTIVE'
+};
+
+let catalogData = [];
+let activeCategory = 'all';
+
+async function loadCatalog(){
+  try {
+    const res = await fetch('/api/catalog');
+    catalogData = await res.json();
+    document.getElementById('catalog-count').textContent = catalogData.length;
+    renderSatList();
+  } catch(e) {
+    console.error('Failed to load catalog:', e);
+  }
+}
+
+function renderSatList(){
+  const list = document.getElementById('sat-list');
+  list.innerHTML='';
+  const sel = parseInt(document.getElementById('target-select').value);
+  const filtered = activeCategory==='all' ? catalogData :
+                   catalogData.filter(o=>o.category===activeCategory);
+  filtered.forEach(obj=>{
+    const div=document.createElement('div');
+    div.className='sat-item'+(obj.norad===sel?' active':'');
+    div.innerHTML=`
+      <div class="sat-cat-dot" style="background:${CAT_COLORS[obj.category]||'#4a7a9b'};"></div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:11.5px;font-weight:500;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:#c8d8f0;">${obj.name}</div>
+        <div style="font-family:'Share Tech Mono';font-size:10px;color:#4a7a9b;">${obj.norad} · ${CAT_LABEL[obj.category]||obj.category}</div>
+      </div>
+    `;
+    div.onclick=()=>{
+      document.getElementById('target-select').value=obj.norad;
+      renderSatList();
+    };
+    list.appendChild(div);
+  });
+}
+
+// Category filter buttons
+document.querySelectorAll('.cat-btn').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('.cat-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    activeCategory=btn.dataset.cat;
+    renderSatList();
+  });
+});
+
+document.getElementById('target-select').addEventListener('change',()=>{
+  renderSatList();
+});
+
+/* ══════════════════════════════════════════
+   PLOTLY 3D INIT
+══════════════════════════════════════════ */
+const LAYOUT3D = {
+  paper_bgcolor:'rgba(0,0,0,0)',
+  plot_bgcolor :'rgba(0,0,0,0)',
+  margin:{l:0,r:0,t:0,b:0},
+  scene:{
+    bgcolor:'rgba(0,0,0,0)',
+    aspectmode:'data',
+    xaxis:{visible:false, showgrid:false, zeroline:false},
+    yaxis:{visible:false, showgrid:false, zeroline:false},
+    zaxis:{visible:false, showgrid:false, zeroline:false},
+    camera:{
+      eye:{x:1.6, y:1.2, z:0.8},
+      up:{x:0, y:0, z:1}
+    }
+  },
+  showlegend: false,
+  uirevision:'constant',
+};
+
+// Earth placeholder at startup
+function linspace(a,b,n){
+  const arr=[];
+  for(let i=0;i<n;i++) arr.push(a+(b-a)*i/(n-1));
+  return arr;
+}
+
+function hideLoading(){ document.getElementById('loading-overlay').classList.add('hidden'); }
+function showLoading(){ document.getElementById('loading-overlay').classList.remove('hidden'); }
+
+(function initPlot(){
+  const u=linspace(0,2*Math.PI,40), v=linspace(0,Math.PI,40);
+  const ex=[],ey=[],ez=[];
+  for(let i=0;i<40;i++){ex.push([]);ey.push([]);ez.push([]);}
+  for(let i=0;i<40;i++) for(let j=0;j<40;j++){
+    ex[i].push(6371*Math.cos(u[i])*Math.sin(v[j]));
+    ey[i].push(6371*Math.sin(u[i])*Math.sin(v[j]));
+    ez[i].push(6371*Math.cos(v[j]));
+  }
+  Plotly.newPlot('plot3d',[{
+    type:'surface', x:ex, y:ey, z:ez,
+    colorscale:[[0,'#061020'],[0.4,'#0c2040'],[1,'#0d3060']],
+    showscale:false, opacity:0.95,
+    lighting:{ambient:.6,diffuse:.8,specular:.3,roughness:.5},
+    lightposition:{x:2000,y:3000,z:5000},
+    contours:{x:{highlight:false},y:{highlight:false},z:{highlight:false}},
+    hoverinfo:'none',
+  }], LAYOUT3D, {responsive:true, displayModeBar:false});
+  hideLoading();
+})();
+
+/* ══════════════════════════════════════════
+   MAIN PREDICTION RUNNER
+══════════════════════════════════════════ */
+async function runPrediction(){
+  const btn = document.getElementById('run-btn');
+  btn.disabled=true; 
+  const originalText = btn.textContent;
+  btn.textContent='SEARCHING SAFE PATH…';
+  showLoading();
+
+  const norad = parseInt(document.getElementById('target-select').value);
+
+  try {
+    const res  = await fetch('/api/predict',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({norad})
+    });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    }
+    const data = await res.json();
+    
+    if (data.error) {
+      throw new Error(data.error);
+    }
+
+    renderPlot(data);
+    renderAlerts(data.alerts);
+    renderDistTable(data.miss_distances);
+    updateMetrics(data);
+    updateOrbitalParams(data.target);
+    
+    // Show maneuver notice if one was applied
+    if (data.maneuver_applied && data.maneuver_applied !== 0) {
+      const noticeDiv = document.getElementById('maneuver-notice');
+      const sign = data.maneuver_applied > 0 ? '+' : '';
+      noticeDiv.innerHTML = `🛸 EVASIVE MANEUVER APPLIED | ΔMM = ${sign}${data.maneuver_applied.toFixed(3)} rev/day`;
+      noticeDiv.style.display = 'block';
+      setTimeout(() => {
+        noticeDiv.style.opacity = '0.5';
+      }, 5000);
+    } else {
+      const noticeDiv = document.getElementById('maneuver-notice');
+      if (data.collision_free) {
+        noticeDiv.innerHTML = `✅ BASELINE TRAJECTORY SAFE | No maneuver required`;
+        noticeDiv.style.display = 'block';
+        setTimeout(() => {
+          noticeDiv.style.opacity = '0.5';
+        }, 3000);
+      } else {
+        noticeDiv.style.display = 'none';
+      }
+    }
+
+  } catch(e){
+    console.error('Prediction error:', e);
+    alert('API error: ' + e.message + '\n\nMake sure Flask server is running on port 5000');
+  } finally {
+    btn.disabled=false; 
+    btn.textContent=originalText;
+    hideLoading();
+  }
+}
+
+/* ══════════════════════════════════════════
+   PLOT UPDATE
+══════════════════════════════════════════ */
+/* ══════════════════════════════════════════
+   PLOT UPDATE - Enhanced with maneuver visualization
+══════════════════════════════════════════ */
+function renderPlot(data){
+  const earth = data.earth;
+  const traj  = data.trajectory;
+  const steps = traj.x.length;
+  const hasManeuver = data.maneuver_applied && data.maneuver_applied !== 0;
+
+  // Gradient colour for trajectory (time evolution)
+  const colors = traj.x.map((_,i)=>i/steps);
+  
+  // Choose line color based on whether maneuver was applied
+  const lineColorScale = hasManeuver ? [
+    [0, '#ff6b00'],      // Orange for evasive trajectory
+    [0.5, '#ffaa33'],
+    [1, '#ffdd99']
+  ] : [
+    [0, '#00a8bc'],
+    [0.5, '#00e5ff'],
+    [1, '#80f0ff']
+  ];
+
+  const traces=[
+    // Earth surface
+    {
+      type:'surface',
+      x: earth.x, y: earth.y, z: earth.z,
+      colorscale:[[0,'#061020'],[0.4,'#0c2040'],[1,'#0d3060']],
+      showscale:false, opacity:0.95,
+      lighting:{ambient:.6,diffuse:.8,specular:.3,roughness:.5},
+      lightposition:{x:2000,y:3000,z:5000},
+      contours:{x:{highlight:false},y:{highlight:false},z:{highlight:false}},
+      hoverinfo:'none',
+    },
+    // Trajectory path (color changes if maneuver applied)
+    {
+      type:'scatter3d',
+      x:traj.x, y:traj.y, z:traj.z,
+      mode:'lines',
+      line:{
+        color: colors,
+        colorscale: lineColorScale,
+        width: hasManeuver ? 5 : 4,  // Slightly thicker if evasive
+        dash: hasManeuver ? 'solid' : 'solid',
+      },
+      name: hasManeuver ? 'Evasive Trajectory (with maneuver)' : 'Predicted Trajectory',
+      hoverinfo:'none',
+    },
+    // Start point
+    {
+      type:'scatter3d',
+      x:[traj.x[0]], y:[traj.y[0]], z:[traj.z[0]],
+      mode:'markers',
+      marker:{size:7, color: hasManeuver ? '#ffaa33' : '#00e5ff', symbol:'circle',
+              line:{color:'#ffffff',width:1.5}},
+      name:'Start',
+      hovertemplate:'<b>Start</b><extra></extra>',
+    },
+    // End point
+    {
+      type:'scatter3d',
+      x:[traj.x[steps-1]], y:[traj.y[steps-1]], z:[traj.z[steps-1]],
+      mode:'markers',
+      marker:{size:6, color: hasManeuver ? '#ff6600' : '#aa00ff', symbol:'diamond',
+              line:{color: hasManeuver ? '#ffaa33' : '#cc66ff',width:1.5}},
+      name:'End',
+      hovertemplate:'<b>End (predicted)</b><extra></extra>',
+    },
+  ];
+
+  // Add maneuver point markers if maneuver was applied
+  if (hasManeuver && data.maneuver_point) {
+    traces.push({
+      type:'scatter3d',
+      x:[data.maneuver_point.x], 
+      y:[data.maneuver_point.y], 
+      z:[data.maneuver_point.z],
+      mode:'markers',
+      marker:{
+        size:12, 
+        color:'#ff3300', 
+        symbol:'x',
+        line:{color:'#ffffff',width:2}
+      },
+      name:'Maneuver Point',
+      hovertemplate:'<b>🛸 EVASIVE MANEUVER</b><br>Applied at this point<extra></extra>',
+    });
+  }
+
+  Plotly.react('plot3d', traces, LAYOUT3D, {responsive:true, displayModeBar:false});
+
+  document.getElementById('hud-pts').textContent = steps+' pts';
+  if (hasManeuver) {
+    document.getElementById('hud-pts').style.color = '#ffaa33';
+    setTimeout(() => {
+      document.getElementById('hud-pts').style.color = '#4a7a9b';
+    }, 3000);
+  }
+}
+/* ══════════════════════════════════════════
+   ALERTS PANEL
+══════════════════════════════════════════ */
+function renderAlerts(alerts){
+  const body = document.getElementById('alerts-body');
+  const cnt  = document.getElementById('alert-count');
+  cnt.textContent = alerts.length;
+
+  if(!alerts.length){
+    body.innerHTML=`<div style="padding:18px;text-align:center;color:#00e676;font-size:12px;font-family:'Share Tech Mono';">✔ NO COLLISION RISKS DETECTED</div>`;
+    return;
+  }
+  body.innerHTML = alerts.slice(0,8).map(a=>`
+    <div class="alert-card">
+      <div class="norad">NORAD ${a.norad}</div>
+      <div class="name">${a.name}</div>
+      <div class="dist">${a.miss_dist.toFixed(1)} <span style="font-size:12px;">km</span></div>
+      <div style="font-size:10px;color:#ff7070;margin-top:4px;font-family:'Share Tech Mono';">
+        ${a.category.toUpperCase()} · BELOW ${50} km THRESHOLD
+      </div>
+    </div>
+  `).join('');
+}
+
+/* ══════════════════════════════════════════
+   DISTANCE TABLE
+══════════════════════════════════════════ */
+function renderDistTable(rows){
+  const tbody = document.getElementById('dist-body');
+  if(!rows || !rows.length){
+    tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:#4a7a9b;padding:16px;">No data</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(r=>{
+    const badgeCls = r.miss_dist < 50  ? 'badge-danger' :
+                     r.miss_dist < 150 ? 'badge-warn'   : 'badge-safe';
+    const badgeTxt = r.miss_dist < 50  ? 'DANGER' :
+                     r.miss_dist < 150 ? 'CAUTION': 'SAFE';
+    return `<tr>
+      <td style="font-family:'Share Tech Mono';font-size:11px;color:#4a7a9b;">${r.norad}</td>
+      <td style="font-size:11px;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${r.name}">${r.name}</td>
+      <td style="font-family:'Orbitron';font-size:11px;font-weight:700;color:${r.miss_dist<50?'#ff3d3d':r.miss_dist<150?'#ffb300':'#00e676'};">${r.miss_dist.toFixed(1)}</td>
+      <td><span class="badge ${badgeCls}">${badgeTxt}</span></td>
+    </tr>`;
+  }).join('');
+}
+
+/* ══════════════════════════════════════════
+   METRICS + HUD
+══════════════════════════════════════════ */
+function updateMetrics(data){
+  const safe = data.collision_free;
+  const miss = data.min_miss;
+
+  document.getElementById('m-minmiss').innerHTML=
+    `${miss.toFixed(1)}<span class="metric-unit">km</span>`;
+
+  const barPct = Math.min(100, (miss/500)*100);
+  const barColor = miss<50?'#ff3d3d':miss<150?'#ffb300':'#00e676';
+  document.getElementById('miss-bar').style.width = barPct+'%';
+  document.getElementById('miss-bar').style.background = barColor;
+
+  const statusEl = document.getElementById('m-status');
+  if(safe){
+    statusEl.innerHTML='✔ CLEAR';
+    statusEl.style.color='#00e676';
+  } else {
+    statusEl.innerHTML='⚠ RISK DETECTED';
+    statusEl.style.color='#ff3d3d';
+  }
+
+  const lastMM = data.pred_mm ? data.pred_mm[data.pred_mm.length-1] : null;
+  document.getElementById('m-mm').textContent =
+    lastMM ? lastMM.toFixed(4)+' rev/day' : '—';
+
+  // Topbar
+  document.getElementById('status-miss').textContent =
+    `MIN MISS: ${miss.toFixed(1)} km`;
+  const safeEl = document.getElementById('status-safe');
+  if(safe){
+    safeEl.innerHTML='● CLEAR';
+    safeEl.style.color='#00e676';
+  } else {
+    safeEl.innerHTML='⚠ RISK';
+    safeEl.style.color='#ff3d3d';
+  }
+
+  // HUD
+  document.getElementById('hud-ms').textContent = data.inference_ms+' ms';
+  document.getElementById('hud-alerts').textContent =
+    'ALERTS: '+(data.alerts?data.alerts.length:0);
+}
+
+function updateOrbitalParams(t){
+  document.getElementById('p-alt').textContent = (t.alt||'—')+' km';
+  document.getElementById('p-inc').textContent = (t.inc||'—')+'°';
+  document.getElementById('p-ecc').textContent = t.ecc !== undefined ? t.ecc.toFixed(5) : '—';
+  document.getElementById('p-mm').textContent  = (t.mm||'—')+' r/d';
+}
+
+/* ══════════════════════════════════════════
+   BOOT & EVENT LISTENERS
+══════════════════════════════════════════ */
+// Add click handler for run button
+document.getElementById('run-btn').addEventListener('click', runPrediction);
+
+// Keyboard shortcut: Enter = Run
+document.addEventListener('keydown',e=>{
+  if(e.key==='Enter' && !document.getElementById('run-btn').disabled && 
+     document.activeElement !== document.getElementById('target-select')) {
+    runPrediction();
+  }
+});
+
+// Load catalog and initialize
+loadCatalog();
+</script>
+</body>
+</html>
